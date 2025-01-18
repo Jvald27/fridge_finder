@@ -1,7 +1,12 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-import time
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import WebDriverException, NoSuchElementException, StaleElementReferenceException
+import os
+import re
 
 
 def convert_to_inches(feet, inches):
@@ -13,6 +18,14 @@ def calculate_volume_cubic_feet(length, width, height):
     """Calculate volume in cubic feet from dimensions in inches."""
     volume_cubic_inches = length * width * height
     return volume_cubic_inches / 1728  # 1 cubic foot = 1728 cubic inches
+
+
+def extract_cubic_feet(description):
+    """Extract the cubic feet value from the product description."""
+    match = re.search(r"(\d+(\.\d+)?)\s?(cu\. ft\.|cubic feet)", description, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return None
 
 
 def main():
@@ -50,27 +63,28 @@ def main():
     print(f"\nYour desired fridge size is about {fridge_volume_cubic_feet:.2f} cubic feet.")
     print(f"Approximate internal capacity: {approx_capacity:.2f} cubic feet.\n")
 
-    # Start Selenium WebDriver
-    driver = webdriver.Chrome()  # Make sure you have the appropriate WebDriver installed
-    driver.maximize_window()
-
+    # Initialize Selenium WebDriver using the correct path
+    driver_path = os.getenv("CHROMEDRIVER_PATH", r"C:\chromedriver\chromedriver-win64\chromedriver.exe")
     try:
-        # Open Home Depot Website
+        driver_service = Service(driver_path)
+        driver = webdriver.Chrome(service=driver_service)
+        driver.maximize_window()
+
+        # Open the Home Depot website
         driver.get("https://www.homedepot.com")
 
         # Locate the search bar and input the search query
-        search_box = driver.find_element(By.ID, "typeahead-search-field-input")
-        search_query = f"{fridge_volume_cubic_feet:.2f} cubic feet Refrigerator"
+        search_query = f"{fridge_volume_cubic_feet:.0f} cu. ft. Refrigerator"
+        search_box = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "typeahead-search-field-input"))
+        )
         search_box.send_keys(search_query)
-
-        # Perform the search
         search_box.send_keys(Keys.RETURN)
 
-        # Wait for results to load
-        time.sleep(5)
-
-        # Scrape and display fridge results
-        print("Top Refrigerator Results from Home Depot:\n")
+        # Wait for search results to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.XPATH, "//span[@data-testid='attribute-product-label']"))
+        )
 
         # Locate refrigerator descriptions
         fridge_results = driver.find_elements(By.XPATH, "//span[@data-testid='attribute-product-label']")
@@ -78,20 +92,47 @@ def main():
         # Locate refrigerator brands
         fridge_brands = driver.find_elements(By.XPATH, "//p[@data-testid='attribute-brandname-above']")
 
-        # Combine and display brands and descriptions
-        for i in range(min(len(fridge_results), 10)):  # Limit to 10 results
+        # Locate refrigerator prices
+        fridge_prices = driver.find_elements(By.XPATH, "//span[contains(@class, 'sui-font-display')]")
+
+        # Combine and filter results within ±2 cubic feet of the user's desired size
+        filtered_results = []
+        for i in range(len(fridge_results)):
             description = fridge_results[i].text
             brand = fridge_brands[i].text if i < len(fridge_brands) else "Brand: Not available"
+            price = fridge_prices[i].text if i < len(fridge_prices) else "Price: Not available"
 
-            print(f"{i + 1}. {brand} {description}")
+            # Extract and check cubic feet
+            cubic_feet = extract_cubic_feet(description)
+            if cubic_feet and abs(cubic_feet - fridge_volume_cubic_feet) <= 2:
+                filtered_results.append((brand, description, price))
 
+            # Stop once we have 5 results
+            if len(filtered_results) >= 5:
+                break
+
+        # Display the filtered results
+        print("\nTop Refrigerator Results from Home Depot (±2 cubic feet of desired size):\n")
+        if filtered_results:
+            for i, (brand, description, price) in enumerate(filtered_results):
+                print(f"{i + 1}. {brand} | {description} | ${price}")
+        else:
+            print("No results found within ±2 cubic feet of your desired size.")
+
+    except NoSuchElementException as e:
+        print(f"An element was not found on the page: {e}")
+    except StaleElementReferenceException:
+        print("A stale element reference error occurred. Trying again might resolve the issue.")
+    except WebDriverException as e:
+        print(f"A WebDriver error occurred: {e}")
     except Exception as e:
-        print(f"An error occurred: {e}")
-
+        print(f"An unexpected error occurred: {e}")
     finally:
-        # Close the browser
-        driver.quit()
+        # Close the browser if the driver is initialized
+        if 'driver' in locals():
+            driver.quit()
 
 
 if __name__ == "__main__":
     main()
+
